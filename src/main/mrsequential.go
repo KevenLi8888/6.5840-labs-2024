@@ -65,9 +65,10 @@ func main() {
 	// call Reduce on each distinct key in intermediate[],
 	// and print the result to mr-out-0.
 	//
-	i := 0
+	i := 0 // track the current position in the slice
 	for i < len(intermediate) {
 		j := i + 1
+		// find all key-value pairs with the same key
 		for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
 			j++
 		}
