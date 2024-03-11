@@ -11,20 +11,27 @@ import "net/http"
 
 type Coordinator struct {
 	// Your definitions here.
-
+	taskStates taskState
 }
 
 // state constants
 const (
-	IDLE       = 1
-	INPROGRESS = 2
-	COMPLETED  = 3
+	IDLE = iota
+	INPROGRESS
+	COMPLETED
+)
+
+// task type constants
+const (
+	MAP = iota
+	REDUCE
 )
 
 type taskInfo struct {
-	workerID int
 	status   int
 	fileName string
+	taskType int
+	nReduce  int
 }
 
 type taskState struct {
@@ -41,6 +48,17 @@ type taskState struct {
 // the RPC argument and reply types are defined in rpc.go.
 func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 	reply.Y = args.X + 1
+	return nil
+}
+
+// GetTask RPC handler distributes tasks to workers.
+// Need to check if the map tasks are completed. If so, distribute reduce tasks.
+func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
+	return nil
+}
+
+// ReportTask RPC handler reports the status of a task to the coordinator.
+func (c *Coordinator) ReportTask(args *ReportTaskArgs, reply *ReportTaskReply) error {
 	return nil
 }
 
@@ -64,6 +82,14 @@ func (c *Coordinator) Done() bool {
 	ret := false
 
 	// Your code here.
+	c.taskStates.mu.Lock()
+	defer c.taskStates.mu.Unlock()
+	for _, task := range c.taskStates.reduceTasks {
+		if task.status != COMPLETED {
+			return false
+		}
+	}
+	ret = true
 
 	return ret
 }
@@ -76,6 +102,17 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 
 	// Your code here.
 
+	// Initialize the tasks and states.
+	c.taskStates.mapTasks = make([]taskInfo, len(files))
+	for i, file := range files {
+		c.taskStates.mapTasks[i] = taskInfo{-1, file, MAP, nReduce}
+	}
+	c.taskStates.reduceTasks = make([]taskInfo, nReduce)
+	for i := range c.taskStates.reduceTasks {
+		c.taskStates.reduceTasks[i] = taskInfo{-1, "", REDUCE, nReduce}
+	}
+
+	// start the RPC server to receive connections from workers.
 	c.server()
 	return &c
 }

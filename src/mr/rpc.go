@@ -29,6 +29,17 @@ type GetTaskArgs struct {
 }
 
 type GetTaskReply struct {
+	TaskID   int
+	TaskInfo taskInfo
+}
+
+// ReportTask
+type ReportTaskArgs struct {
+	TaskID    int
+	TaskState int
+}
+
+type ReportTaskReply struct {
 }
 
 // Cook up a unique-ish UNIX-domain socket name

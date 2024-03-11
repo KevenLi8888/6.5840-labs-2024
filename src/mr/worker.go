@@ -1,14 +1,19 @@
 package mr
 
-import "fmt"
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+)
 import "log"
 import "net/rpc"
 import "hash/fnv"
 
 // Map functions return a slice of KeyValue.
 type KeyValue struct {
-	Key   string
-	Value string
+	Key   string `json:"key"`
+	Value string `json:"value"`
 }
 
 // use ihash(key) % NReduce to choose the reduce
@@ -28,10 +33,81 @@ func Worker(mapf func(string, string) []KeyValue,
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
 
-	// send an RPC to the coordinator asking for a task
+	// TODO: implement the worker's main loop.
 
-	// read the file and call the map function
+	// send an RPC to the coordinator asking for a task.
+	getTaskArgs := GetTaskArgs{}
+	getTaskReply := GetTaskReply{}
+	err := call("Coordinator.GetTask", &getTaskArgs, &getTaskReply)
+	if err != nil {
+		// TODO: how to handle the error? e.g. when the coordinator is down.
+		log.Printf("GetTask call failed: %v", err)
+		return // TODO: break
+	}
 
+	// read the file and call the corresponding function.
+	if getTaskReply.TaskInfo.taskType == MAP {
+		// read the input file
+		file, err := os.Open(getTaskReply.TaskInfo.fileName)
+		if err != nil {
+			log.Printf("Cannot open file: %v, %v", getTaskReply.TaskInfo.fileName, err)
+			return // TODO: break
+		}
+
+		content, err := io.ReadAll(file)
+		if err != nil {
+			log.Printf("Cannot read file: %v, %v", getTaskReply.TaskInfo.fileName, err)
+			return // TODO: break
+		}
+
+		file.Close()
+		// call the map function
+		kva := mapf(getTaskReply.TaskInfo.fileName, string(content))
+
+		// split the intermediate key-value pairs into nReduce parts
+		intermediate := make([][]KeyValue, getTaskReply.TaskInfo.nReduce)
+		for _, kv := range kva {
+			reduceTaskNumber := ihash(kv.Key) % getTaskReply.TaskInfo.nReduce
+			intermediate[reduceTaskNumber] = append(intermediate[reduceTaskNumber], kv)
+		}
+
+		// write the intermediate key-value pairs to files
+		for i, kva := range intermediate {
+			bytes, err := json.Marshal(kva)
+			if err != nil {
+				log.Printf("Cannot marshal intermediate key-value pairs: %v", err)
+				return // TODO: break
+			}
+			fileName := fmt.Sprintf("mr-%v-%v", getTaskReply.TaskID, i)
+			file, err := os.Create(fileName)
+			if err != nil {
+				log.Printf("Cannot create file: %v, %v", fileName, err)
+				return // TODO: break
+			}
+			_, err = file.Write(bytes)
+			if err != nil {
+				log.Printf("Cannot write file: %v, %v", fileName, err)
+				return // TODO: break
+			}
+			file.Close()
+		}
+
+		// send the task completed state to the coordinator
+		reportTaskArgs := ReportTaskArgs{
+			TaskID:    getTaskReply.TaskID,
+			TaskState: COMPLETED,
+		}
+		reportTaskReply := ReportTaskReply{}
+		err = call("Coordinator.ReportTask", &reportTaskArgs, &reportTaskReply)
+		if err != nil {
+			log.Printf("ReportTask call failed: %v", err)
+			return // TODO: break
+		}
+	} else if getTaskReply.TaskInfo.taskType == REDUCE {
+
+	} else {
+		log.Printf("Unknown task type: %v", getTaskReply.TaskInfo.taskType)
+	}
 }
 
 // example function to show how to make an RPC call to the coordinator.
@@ -52,8 +128,8 @@ func CallExample() {
 	// the "Coordinator.Example" tells the
 	// receiving server that we'd like to call
 	// the Example() method of struct Coordinator.
-	ok := call("Coordinator.Example", &args, &reply)
-	if ok {
+	err := call("Coordinator.Example", &args, &reply)
+	if err == nil {
 		// reply.Y should be 100.
 		fmt.Printf("reply.Y %v\n", reply.Y)
 	} else {
@@ -62,9 +138,8 @@ func CallExample() {
 }
 
 // send an RPC request to the coordinator, wait for the response.
-// usually returns true.
-// returns false if something goes wrong.
-func call(rpcname string, args interface{}, reply interface{}) bool {
+// returns the error of the corresponding rpc call.
+func call(rpcname string, args interface{}, reply interface{}) error {
 	// c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
 	sockname := coordinatorSock()
 	c, err := rpc.DialHTTP("unix", sockname)
@@ -74,10 +149,5 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	defer c.Close()
 
 	err = c.Call(rpcname, args, reply)
-	if err == nil {
-		return true
-	}
-
-	fmt.Println(err)
-	return false
+	return err
 }
