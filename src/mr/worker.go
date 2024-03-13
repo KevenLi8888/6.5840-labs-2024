@@ -34,79 +34,83 @@ func Worker(mapf func(string, string) []KeyValue,
 	// CallExample()
 
 	// TODO: implement the worker's main loop.
-
-	// send an RPC to the coordinator asking for a task.
-	getTaskArgs := GetTaskArgs{}
-	getTaskReply := GetTaskReply{}
-	err := call("Coordinator.GetTask", &getTaskArgs, &getTaskReply)
-	if err != nil {
-		// TODO: how to handle the error? e.g. when the coordinator is down.
-		log.Printf("GetTask call failed: %v", err)
-		return // TODO: break
-	}
-
-	// read the file and call the corresponding function.
-	if getTaskReply.TaskInfo.taskType == MAP {
-		// read the input file
-		file, err := os.Open(getTaskReply.TaskInfo.fileName)
+	for {
+		// send an RPC to the coordinator asking for a task.
+		getTaskArgs := GetTaskArgs{}
+		getTaskReply := GetTaskReply{}
+		err := call("Coordinator.GetTask", &getTaskArgs, &getTaskReply)
 		if err != nil {
-			log.Printf("Cannot open file: %v, %v", getTaskReply.TaskInfo.fileName, err)
-			return // TODO: break
+			// if the worker fails to contact the coordinator, it can assume
+			// that the coordinator has exited because the job is done.
+			// the worker should then exit.
+			log.Printf("GetTask call failed: %v", err)
+			return
 		}
 
-		content, err := io.ReadAll(file)
-		if err != nil {
-			log.Printf("Cannot read file: %v, %v", getTaskReply.TaskInfo.fileName, err)
-			return // TODO: break
-		}
-
-		file.Close()
-		// call the map function
-		kva := mapf(getTaskReply.TaskInfo.fileName, string(content))
-
-		// split the intermediate key-value pairs into nReduce parts
-		intermediate := make([][]KeyValue, getTaskReply.TaskInfo.nReduce)
-		for _, kv := range kva {
-			reduceTaskNumber := ihash(kv.Key) % getTaskReply.TaskInfo.nReduce
-			intermediate[reduceTaskNumber] = append(intermediate[reduceTaskNumber], kv)
-		}
-
-		// write the intermediate key-value pairs to files
-		for i, kva := range intermediate {
-			bytes, err := json.Marshal(kva)
+		// read the file and call the corresponding function.
+		if getTaskReply.TaskInfo.taskType == MAP {
+			// read the input file
+			file, err := os.Open(getTaskReply.TaskInfo.fileName)
 			if err != nil {
-				log.Printf("Cannot marshal intermediate key-value pairs: %v", err)
-				return // TODO: break
+				log.Printf("Cannot open file: %v, %v", getTaskReply.TaskInfo.fileName, err)
+				continue
 			}
-			fileName := fmt.Sprintf("mr-%v-%v", getTaskReply.TaskID, i)
-			file, err := os.Create(fileName)
+
+			content, err := io.ReadAll(file)
 			if err != nil {
-				log.Printf("Cannot create file: %v, %v", fileName, err)
-				return // TODO: break
+				log.Printf("Cannot read file: %v, %v", getTaskReply.TaskInfo.fileName, err)
+				continue
 			}
-			_, err = file.Write(bytes)
-			if err != nil {
-				log.Printf("Cannot write file: %v, %v", fileName, err)
-				return // TODO: break
-			}
+
 			file.Close()
-		}
+			// call the map function
+			kva := mapf(getTaskReply.TaskInfo.fileName, string(content))
 
-		// send the task completed state to the coordinator
-		reportTaskArgs := ReportTaskArgs{
-			TaskID:    getTaskReply.TaskID,
-			TaskState: COMPLETED,
-		}
-		reportTaskReply := ReportTaskReply{}
-		err = call("Coordinator.ReportTask", &reportTaskArgs, &reportTaskReply)
-		if err != nil {
-			log.Printf("ReportTask call failed: %v", err)
-			return // TODO: break
-		}
-	} else if getTaskReply.TaskInfo.taskType == REDUCE {
+			// split the intermediate key-value pairs into nReduce parts
+			intermediate := make([][]KeyValue, getTaskReply.TaskInfo.nReduce)
+			for _, kv := range kva {
+				reduceTaskNumber := ihash(kv.Key) % getTaskReply.TaskInfo.nReduce
+				intermediate[reduceTaskNumber] = append(intermediate[reduceTaskNumber], kv)
+			}
 
-	} else {
-		log.Printf("Unknown task type: %v", getTaskReply.TaskInfo.taskType)
+			// write the intermediate key-value pairs to files
+			for i, kva := range intermediate {
+				bytes, err := json.Marshal(kva)
+				if err != nil {
+					log.Printf("Cannot marshal intermediate key-value pairs: %v", err)
+					continue
+				}
+				fileName := fmt.Sprintf("mr-%v-%v", getTaskReply.TaskID, i)
+				file, err := os.Create(fileName)
+				if err != nil {
+					log.Printf("Cannot create file: %v, %v", fileName, err)
+					continue
+				}
+				_, err = file.Write(bytes)
+				if err != nil {
+					log.Printf("Cannot write file: %v, %v", fileName, err)
+					continue
+				}
+				file.Close()
+			}
+
+			// send the task completed state to the coordinator
+			reportTaskArgs := ReportTaskArgs{
+				TaskID:    getTaskReply.TaskID,
+				TaskState: COMPLETED,
+			}
+			reportTaskReply := ReportTaskReply{}
+			err = call("Coordinator.ReportTask", &reportTaskArgs, &reportTaskReply)
+			if err != nil {
+				log.Printf("ReportTask call failed: %v", err)
+				continue
+			}
+		} else if getTaskReply.TaskInfo.taskType == REDUCE {
+			log.Printf("NOT YET IMPLEMENTED")
+			continue
+		} else {
+			log.Printf("Unknown task type: %v", getTaskReply.TaskInfo.taskType)
+		}
 	}
 }
 

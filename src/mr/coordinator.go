@@ -3,6 +3,7 @@ package mr
 import (
 	"log"
 	"sync"
+	"time"
 )
 import "net"
 import "os"
@@ -53,12 +54,52 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 
 // GetTask RPC handler distributes tasks to workers.
 // Need to check if the map tasks are completed. If so, distribute reduce tasks.
+// For each task, wait 10 seconds for the worker to complete the task.
 func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
+	c.taskStates.mu.Lock()
+	defer c.taskStates.mu.Unlock()
+	// check if all map tasks are completed
+	if !allTaskCompleted(c.taskStates.mapTasks) {
+		// distribute a map task
+		for i, task := range c.taskStates.mapTasks {
+			if task.status == IDLE {
+				reply.TaskID = i
+				reply.TaskInfo = task
+				c.taskStates.mapTasks[i].status = INPROGRESS
+				go c.resetUncompletedTasks(i, MAP)
+				return nil
+			}
+		}
+	} else if !allTaskCompleted(c.taskStates.reduceTasks) {
+		// distribute a reduce task
+		for i, task := range c.taskStates.reduceTasks {
+			if task.status == IDLE {
+				reply.TaskID = i
+				reply.TaskInfo = task
+				c.taskStates.reduceTasks[i].status = INPROGRESS
+				go c.resetUncompletedTasks(i, REDUCE)
+				return nil
+			}
+		}
+	} else {
+		// all tasks are completed
+		// TODO: what to do if all the map and reduce tasks are completed?
+		log.Printf("All tasks are completed")
+	}
 	return nil
 }
 
 // ReportTask RPC handler reports the status of a task to the coordinator.
 func (c *Coordinator) ReportTask(args *ReportTaskArgs, reply *ReportTaskReply) error {
+	c.taskStates.mu.Lock()
+	defer c.taskStates.mu.Unlock()
+	if args.TaskInfo.taskType == MAP {
+		c.taskStates.mapTasks[args.TaskID].status = args.TaskInfo.status
+	} else if args.TaskInfo.taskType == REDUCE {
+		c.taskStates.reduceTasks[args.TaskID].status = args.TaskInfo.status
+	} else {
+		log.Printf("Unknown task type: %v", args.TaskInfo.taskType)
+	}
 	return nil
 }
 
@@ -109,10 +150,40 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	}
 	c.taskStates.reduceTasks = make([]taskInfo, nReduce)
 	for i := range c.taskStates.reduceTasks {
+		// TODO: the file name for the reduce tasks?
 		c.taskStates.reduceTasks[i] = taskInfo{-1, "", REDUCE, nReduce}
 	}
+	c.taskStates.mu = sync.Mutex{}
 
 	// start the RPC server to receive connections from workers.
 	c.server()
 	return &c
+}
+
+// allTaskCompleted checks if all tasks of the given type is completed.
+func allTaskCompleted(taskInfo []taskInfo) bool {
+	for _, task := range taskInfo {
+		if task.status != COMPLETED {
+			return false
+		}
+	}
+	return true
+}
+
+// resetUncompletedTasks checks the status of a task after a delay of 10 seconds.
+// If the task is not completed within this time, it resets the task status to IDLE.
+// This allows the task to be reassigned to another worker for processing.
+func (c *Coordinator) resetUncompletedTasks(taskID int, taskType int) {
+	time.Sleep(10 * time.Second)
+	c.taskStates.mu.Lock()
+	defer c.taskStates.mu.Unlock()
+	if taskType == MAP {
+		if c.taskStates.mapTasks[taskID].status != COMPLETED {
+			c.taskStates.mapTasks[taskID].status = IDLE
+		}
+	} else if taskType == REDUCE {
+		if c.taskStates.reduceTasks[taskID].status != COMPLETED {
+			c.taskStates.reduceTasks[taskID].status = IDLE
+		}
+	}
 }
