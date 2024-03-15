@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"errors"
 	"log"
 	"sync"
 	"time"
@@ -30,7 +31,7 @@ const (
 
 type taskInfo struct {
 	status   int
-	fileName string
+	filePath []string
 	taskType int
 	nReduce  int
 }
@@ -54,11 +55,10 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 
 // GetTask RPC handler distributes tasks to workers.
 // Need to check if the map tasks are completed. If so, distribute reduce tasks.
-// For each task, wait 10 seconds for the worker to complete the task.
+// After distributing a task, start a goroutine to check if the task is completed after a delay of 10 seconds.
 func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 	c.taskStates.mu.Lock()
 	defer c.taskStates.mu.Unlock()
-	// check if all map tasks are completed
 	if !allTaskCompleted(c.taskStates.mapTasks) {
 		// distribute a map task
 		for i, task := range c.taskStates.mapTasks {
@@ -70,6 +70,7 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 				return nil
 			}
 		}
+		// TODO: all map tasks have been distributed but not completed
 	} else if !allTaskCompleted(c.taskStates.reduceTasks) {
 		// distribute a reduce task
 		for i, task := range c.taskStates.reduceTasks {
@@ -85,6 +86,7 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 		// all tasks are completed
 		// TODO: what to do if all the map and reduce tasks are completed?
 		log.Printf("All tasks are completed")
+		return errors.New("all tasks are completed")
 	}
 	return nil
 }
@@ -95,6 +97,10 @@ func (c *Coordinator) ReportTask(args *ReportTaskArgs, reply *ReportTaskReply) e
 	defer c.taskStates.mu.Unlock()
 	if args.TaskInfo.taskType == MAP {
 		c.taskStates.mapTasks[args.TaskID].status = args.TaskInfo.status
+		// update the intermediate file paths for the reduce tasks
+		for i, filePath := range args.TaskInfo.filePath {
+			c.taskStates.reduceTasks[i].filePath = append(c.taskStates.reduceTasks[i].filePath, filePath)
+		}
 	} else if args.TaskInfo.taskType == REDUCE {
 		c.taskStates.reduceTasks[args.TaskID].status = args.TaskInfo.status
 	} else {
@@ -146,12 +152,11 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	// Initialize the tasks and states.
 	c.taskStates.mapTasks = make([]taskInfo, len(files))
 	for i, file := range files {
-		c.taskStates.mapTasks[i] = taskInfo{-1, file, MAP, nReduce}
+		c.taskStates.mapTasks[i] = taskInfo{-1, []string{file}, MAP, nReduce}
 	}
 	c.taskStates.reduceTasks = make([]taskInfo, nReduce)
 	for i := range c.taskStates.reduceTasks {
-		// TODO: the file name for the reduce tasks?
-		c.taskStates.reduceTasks[i] = taskInfo{-1, "", REDUCE, nReduce}
+		c.taskStates.reduceTasks[i] = taskInfo{-1, []string{}, REDUCE, nReduce}
 	}
 	c.taskStates.mu = sync.Mutex{}
 

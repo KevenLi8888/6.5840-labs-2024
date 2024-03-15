@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"sort"
 )
 import "log"
 import "net/rpc"
@@ -24,6 +26,14 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
+// for sorting by key.
+type ByKey []KeyValue
+
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
+
 // main/mrworker.go calls this function.
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
@@ -33,7 +43,8 @@ func Worker(mapf func(string, string) []KeyValue,
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
 
-	// TODO: implement the worker's main loop.
+	// TODO: use temporary files and atomically rename them once the file is completely written
+
 	for {
 		// send an RPC to the coordinator asking for a task.
 		getTaskArgs := GetTaskArgs{}
@@ -47,69 +58,127 @@ func Worker(mapf func(string, string) []KeyValue,
 			return
 		}
 
+		taskID := getTaskReply.TaskID
+		taskInfo := getTaskReply.TaskInfo
+
 		// read the file and call the corresponding function.
-		if getTaskReply.TaskInfo.taskType == MAP {
+		if taskInfo.taskType == MAP {
 			// read the input file
-			file, err := os.Open(getTaskReply.TaskInfo.fileName)
+			inputFile, err := os.Open(taskInfo.filePath[0])
 			if err != nil {
-				log.Printf("Cannot open file: %v, %v", getTaskReply.TaskInfo.fileName, err)
+				log.Printf("Cannot open inputFile: %v, %v", taskInfo.filePath, err)
 				continue
 			}
 
-			content, err := io.ReadAll(file)
+			content, err := io.ReadAll(inputFile)
 			if err != nil {
-				log.Printf("Cannot read file: %v, %v", getTaskReply.TaskInfo.fileName, err)
+				log.Printf("Cannot read inputFile: %v, %v", taskInfo.filePath, err)
 				continue
 			}
 
-			file.Close()
+			inputFile.Close()
 			// call the map function
-			kva := mapf(getTaskReply.TaskInfo.fileName, string(content))
+			kva := mapf(taskInfo.filePath[0], string(content))
 
 			// split the intermediate key-value pairs into nReduce parts
-			intermediate := make([][]KeyValue, getTaskReply.TaskInfo.nReduce)
+			intermediate := make([][]KeyValue, taskInfo.nReduce)
 			for _, kv := range kva {
-				reduceTaskNumber := ihash(kv.Key) % getTaskReply.TaskInfo.nReduce
-				intermediate[reduceTaskNumber] = append(intermediate[reduceTaskNumber], kv)
+				reduceTaskID := ihash(kv.Key) % taskInfo.nReduce
+				intermediate[reduceTaskID] = append(intermediate[reduceTaskID], kv)
 			}
 
 			// write the intermediate key-value pairs to files
-			for i, kva := range intermediate {
+			intermediateFilePaths := make([]string, len(intermediate))
+			for reduceTaskID, kva := range intermediate {
 				bytes, err := json.Marshal(kva)
 				if err != nil {
 					log.Printf("Cannot marshal intermediate key-value pairs: %v", err)
 					continue
 				}
-				fileName := fmt.Sprintf("mr-%v-%v", getTaskReply.TaskID, i)
+				fileName := fmt.Sprintf("mr-%v-%v", taskID, reduceTaskID)
 				file, err := os.Create(fileName)
 				if err != nil {
-					log.Printf("Cannot create file: %v, %v", fileName, err)
+					log.Printf("Cannot create inputFile: %v, %v", fileName, err)
 					continue
 				}
 				_, err = file.Write(bytes)
 				if err != nil {
-					log.Printf("Cannot write file: %v, %v", fileName, err)
+					log.Printf("Cannot write inputFile: %v, %v", fileName, err)
 					continue
 				}
 				file.Close()
+				absPath, err := filepath.Abs(fileName)
+				if err != nil {
+					log.Printf("Cannot get absolute path: %v, %v", fileName, err)
+					continue
+				}
+				intermediateFilePaths[reduceTaskID] = absPath
 			}
 
-			// send the task completed state to the coordinator
-			reportTaskArgs := ReportTaskArgs{
-				TaskID:    getTaskReply.TaskID,
-				TaskState: COMPLETED,
-			}
+			// send the intermediate file paths and the task status to the coordinator
+			taskInfo.status = COMPLETED
+			taskInfo.filePath = intermediateFilePaths
+			reportTaskArgs := ReportTaskArgs{taskID, taskInfo}
 			reportTaskReply := ReportTaskReply{}
 			err = call("Coordinator.ReportTask", &reportTaskArgs, &reportTaskReply)
 			if err != nil {
 				log.Printf("ReportTask call failed: %v", err)
 				continue
 			}
-		} else if getTaskReply.TaskInfo.taskType == REDUCE {
-			log.Printf("NOT YET IMPLEMENTED")
-			continue
+		} else if taskInfo.taskType == REDUCE {
+			// read in all the intermediate files
+			intermediate := []KeyValue{}
+			for _, fileName := range taskInfo.filePath {
+				file, err := os.Open(fileName)
+				if err != nil {
+					log.Printf("Cannot open inputFile: %v, %v", fileName, err)
+					continue
+				}
+				bytes, err := io.ReadAll(file)
+				if err != nil {
+					log.Printf("Cannot read inputFile: %v, %v", fileName, err)
+					continue
+				}
+				file.Close()
+				var kva []KeyValue
+				err = json.Unmarshal(bytes, &kva)
+				if err != nil {
+					log.Printf("Cannot unmarshal intermediate key-value pairs: %v", err)
+					continue
+				}
+				intermediate = append(intermediate, kva...)
+			}
+			// sort by the intermediate keys
+			sort.Sort(ByKey(intermediate))
+			// iterates over the sorted intermediate data, for each unique intermediate key encountered, call the reduce function
+			// and write the output to a file
+			oname := fmt.Sprintf("mr-out-%v", taskID)
+			ofile, err := os.Create(oname)
+			if err != nil {
+				log.Printf("Cannot create outputFile: %v, %v", oname, err)
+				continue
+			}
+			i := 0 // track the current position in the slice
+			for i < len(intermediate) {
+				j := i + 1
+				// find all key-value pairs with the same key
+				for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
+					j++
+				}
+				values := []string{}
+				for k := i; k < j; k++ {
+					values = append(values, intermediate[k].Value)
+				}
+				output := reducef(intermediate[i].Key, values)
+
+				// this is the correct format for each line of Reduce output.
+				fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
+
+				i = j
+			}
+			ofile.Close()
 		} else {
-			log.Printf("Unknown task type: %v", getTaskReply.TaskInfo.taskType)
+			log.Printf("Unknown task type: %v", taskInfo.taskType)
 		}
 	}
 }
