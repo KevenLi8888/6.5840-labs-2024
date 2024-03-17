@@ -43,8 +43,6 @@ func Worker(mapf func(string, string) []KeyValue,
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
 
-	// TODO: use temporary files and atomically rename them once the file is completely written
-
 	for {
 		// send an RPC to the coordinator asking for a task.
 		getTaskArgs := GetTaskArgs{}
@@ -96,7 +94,8 @@ func Worker(mapf func(string, string) []KeyValue,
 					continue
 				}
 				fileName := fmt.Sprintf("mr-%v-%v", taskID, reduceTaskID)
-				file, err := os.Create(fileName)
+				// use temporary files and atomically rename them once the file is completely written
+				file, err := os.CreateTemp("", fileName)
 				if err != nil {
 					log.Printf("Cannot create inputFile: %v, %v", fileName, err)
 					continue
@@ -107,6 +106,10 @@ func Worker(mapf func(string, string) []KeyValue,
 					continue
 				}
 				file.Close()
+				// rename and move the temporary file to current directory
+				// When creating a temporary file using os.CreateTemp without specifying a directory, the file is created in the default directory for temporary files.
+				// The Name method of the *os.File returned by os.CreateTemp returns the full file path, not just the file name.
+				err = os.Rename(file.Name(), fileName)
 				absPath, err := filepath.Abs(fileName)
 				if err != nil {
 					log.Printf("Cannot get absolute path: %v, %v", fileName, err)
@@ -177,6 +180,9 @@ func Worker(mapf func(string, string) []KeyValue,
 				i = j
 			}
 			ofile.Close()
+		} else if taskInfo.taskType == EXIT {
+			log.Printf("Received EXIT task, exiting")
+			return
 		} else {
 			log.Printf("Unknown task type: %v", taskInfo.taskType)
 		}

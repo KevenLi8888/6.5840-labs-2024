@@ -1,7 +1,6 @@
 package mr
 
 import (
-	"errors"
 	"log"
 	"sync"
 	"time"
@@ -27,6 +26,7 @@ const (
 const (
 	MAP = iota
 	REDUCE
+	EXIT
 )
 
 type taskInfo struct {
@@ -36,9 +36,9 @@ type taskInfo struct {
 	nReduce  int
 }
 
+// index: task number
 type taskState struct {
-	mu sync.Mutex
-	// index: task number
+	cond        *sync.Cond
 	mapTasks    []taskInfo
 	reduceTasks []taskInfo
 }
@@ -57,44 +57,49 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 // Need to check if the map tasks are completed. If so, distribute reduce tasks.
 // After distributing a task, start a goroutine to check if the task is completed after a delay of 10 seconds.
 func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
-	c.taskStates.mu.Lock()
-	defer c.taskStates.mu.Unlock()
-	if !allTaskCompleted(c.taskStates.mapTasks) {
-		// distribute a map task
-		for i, task := range c.taskStates.mapTasks {
-			if task.status == IDLE {
-				reply.TaskID = i
-				reply.TaskInfo = task
-				c.taskStates.mapTasks[i].status = INPROGRESS
-				go c.resetUncompletedTasks(i, MAP)
-				return nil
+	c.taskStates.cond.L.Lock()
+	defer c.taskStates.cond.L.Unlock()
+	for {
+		if !allTaskCompleted(c.taskStates.mapTasks) {
+			// distribute a map task
+			for i, task := range c.taskStates.mapTasks {
+				if task.status == IDLE {
+					reply.TaskID = i
+					reply.TaskInfo = task
+					c.taskStates.mapTasks[i].status = INPROGRESS
+					go c.resetUncompletedTasks(i, MAP)
+					return nil
+				}
 			}
-		}
-		// TODO: all map tasks have been distributed but not completed
-	} else if !allTaskCompleted(c.taskStates.reduceTasks) {
-		// distribute a reduce task
-		for i, task := range c.taskStates.reduceTasks {
-			if task.status == IDLE {
-				reply.TaskID = i
-				reply.TaskInfo = task
-				c.taskStates.reduceTasks[i].status = INPROGRESS
-				go c.resetUncompletedTasks(i, REDUCE)
-				return nil
+			// all map tasks have been distributed but not completed
+			// either because they are in progress, or because some worker failed and the task was reset to IDLE
+			c.taskStates.cond.Wait()
+		} else if !allTaskCompleted(c.taskStates.reduceTasks) {
+			// distribute a reduce task
+			for i, task := range c.taskStates.reduceTasks {
+				if task.status == IDLE {
+					reply.TaskID = i
+					reply.TaskInfo = task
+					c.taskStates.reduceTasks[i].status = INPROGRESS
+					go c.resetUncompletedTasks(i, REDUCE)
+					return nil
+				}
 			}
+			// all reduce tasks have been distributed but not completed
+			// either because they are in progress, or because some worker failed and the task was reset to IDLE
+			c.taskStates.cond.Wait()
+		} else {
+			// all tasks are completed, send an EXIT task
+			reply.TaskInfo = taskInfo{status: COMPLETED, taskType: EXIT}
+			return nil
 		}
-	} else {
-		// all tasks are completed
-		// TODO: what to do if all the map and reduce tasks are completed?
-		log.Printf("All tasks are completed")
-		return errors.New("all tasks are completed")
 	}
-	return nil
 }
 
 // ReportTask RPC handler reports the status of a task to the coordinator.
 func (c *Coordinator) ReportTask(args *ReportTaskArgs, reply *ReportTaskReply) error {
-	c.taskStates.mu.Lock()
-	defer c.taskStates.mu.Unlock()
+	c.taskStates.cond.L.Lock()
+	defer c.taskStates.cond.L.Unlock()
 	if args.TaskInfo.taskType == MAP {
 		c.taskStates.mapTasks[args.TaskID].status = args.TaskInfo.status
 		// update the intermediate file paths for the reduce tasks
@@ -106,6 +111,8 @@ func (c *Coordinator) ReportTask(args *ReportTaskArgs, reply *ReportTaskReply) e
 	} else {
 		log.Printf("Unknown task type: %v", args.TaskInfo.taskType)
 	}
+	// signal the waiting workers
+	c.taskStates.cond.Broadcast()
 	return nil
 }
 
@@ -129,8 +136,8 @@ func (c *Coordinator) Done() bool {
 	ret := false
 
 	// Your code here.
-	c.taskStates.mu.Lock()
-	defer c.taskStates.mu.Unlock()
+	c.taskStates.cond.L.Lock()
+	defer c.taskStates.cond.L.Unlock()
 	for _, task := range c.taskStates.reduceTasks {
 		if task.status != COMPLETED {
 			return false
@@ -158,7 +165,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	for i := range c.taskStates.reduceTasks {
 		c.taskStates.reduceTasks[i] = taskInfo{-1, []string{}, REDUCE, nReduce}
 	}
-	c.taskStates.mu = sync.Mutex{}
+	c.taskStates.cond = sync.NewCond(&sync.Mutex{})
 
 	// start the RPC server to receive connections from workers.
 	c.server()
@@ -180,8 +187,8 @@ func allTaskCompleted(taskInfo []taskInfo) bool {
 // This allows the task to be reassigned to another worker for processing.
 func (c *Coordinator) resetUncompletedTasks(taskID int, taskType int) {
 	time.Sleep(10 * time.Second)
-	c.taskStates.mu.Lock()
-	defer c.taskStates.mu.Unlock()
+	c.taskStates.cond.L.Lock()
+	defer c.taskStates.cond.L.Unlock()
 	if taskType == MAP {
 		if c.taskStates.mapTasks[taskID].status != COMPLETED {
 			c.taskStates.mapTasks[taskID].status = IDLE
@@ -191,4 +198,5 @@ func (c *Coordinator) resetUncompletedTasks(taskID int, taskType int) {
 			c.taskStates.reduceTasks[taskID].status = IDLE
 		}
 	}
+	c.taskStates.cond.Broadcast()
 }
