@@ -159,11 +159,11 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	// Initialize the tasks and states.
 	c.taskStates.mapTasks = make([]taskInfo, len(files))
 	for i, file := range files {
-		c.taskStates.mapTasks[i] = taskInfo{-1, []string{file}, MAP, nReduce}
+		c.taskStates.mapTasks[i] = taskInfo{IDLE, []string{file}, MAP, nReduce}
 	}
 	c.taskStates.reduceTasks = make([]taskInfo, nReduce)
 	for i := range c.taskStates.reduceTasks {
-		c.taskStates.reduceTasks[i] = taskInfo{-1, []string{}, REDUCE, nReduce}
+		c.taskStates.reduceTasks[i] = taskInfo{IDLE, []string{}, REDUCE, nReduce}
 	}
 	c.taskStates.cond = sync.NewCond(&sync.Mutex{})
 
