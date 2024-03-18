@@ -30,10 +30,10 @@ const (
 )
 
 type taskInfo struct {
-	status   int
-	filePath []string
-	taskType int
-	nReduce  int
+	Status   int
+	FilePath []string
+	TaskType int
+	NReduce  int
 }
 
 // index: task number
@@ -63,10 +63,10 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 		if !allTaskCompleted(c.taskStates.mapTasks) {
 			// distribute a map task
 			for i, task := range c.taskStates.mapTasks {
-				if task.status == IDLE {
+				if task.Status == IDLE {
 					reply.TaskID = i
 					reply.TaskInfo = task
-					c.taskStates.mapTasks[i].status = INPROGRESS
+					c.taskStates.mapTasks[i].Status = INPROGRESS
 					go c.resetUncompletedTasks(i, MAP)
 					return nil
 				}
@@ -77,10 +77,10 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 		} else if !allTaskCompleted(c.taskStates.reduceTasks) {
 			// distribute a reduce task
 			for i, task := range c.taskStates.reduceTasks {
-				if task.status == IDLE {
+				if task.Status == IDLE {
 					reply.TaskID = i
 					reply.TaskInfo = task
-					c.taskStates.reduceTasks[i].status = INPROGRESS
+					c.taskStates.reduceTasks[i].Status = INPROGRESS
 					go c.resetUncompletedTasks(i, REDUCE)
 					return nil
 				}
@@ -90,7 +90,8 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 			c.taskStates.cond.Wait()
 		} else {
 			// all tasks are completed, send an EXIT task
-			reply.TaskInfo = taskInfo{status: COMPLETED, taskType: EXIT}
+			// FIXME: both the worker and the coordinator does not exit when all tasks are completed
+			reply.TaskInfo = taskInfo{Status: COMPLETED, TaskType: EXIT}
 			return nil
 		}
 	}
@@ -100,16 +101,16 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 func (c *Coordinator) ReportTask(args *ReportTaskArgs, reply *ReportTaskReply) error {
 	c.taskStates.cond.L.Lock()
 	defer c.taskStates.cond.L.Unlock()
-	if args.TaskInfo.taskType == MAP {
-		c.taskStates.mapTasks[args.TaskID].status = args.TaskInfo.status
+	if args.TaskInfo.TaskType == MAP {
+		c.taskStates.mapTasks[args.TaskID].Status = args.TaskInfo.Status
 		// update the intermediate file paths for the reduce tasks
-		for i, filePath := range args.TaskInfo.filePath {
-			c.taskStates.reduceTasks[i].filePath = append(c.taskStates.reduceTasks[i].filePath, filePath)
+		for i, filePath := range args.TaskInfo.FilePath {
+			c.taskStates.reduceTasks[i].FilePath = append(c.taskStates.reduceTasks[i].FilePath, filePath)
 		}
-	} else if args.TaskInfo.taskType == REDUCE {
-		c.taskStates.reduceTasks[args.TaskID].status = args.TaskInfo.status
+	} else if args.TaskInfo.TaskType == REDUCE {
+		c.taskStates.reduceTasks[args.TaskID].Status = args.TaskInfo.Status
 	} else {
-		log.Printf("Unknown task type: %v", args.TaskInfo.taskType)
+		log.Printf("Unknown task type: %v", args.TaskInfo.TaskType)
 	}
 	// signal the waiting workers
 	c.taskStates.cond.Broadcast()
@@ -139,7 +140,7 @@ func (c *Coordinator) Done() bool {
 	c.taskStates.cond.L.Lock()
 	defer c.taskStates.cond.L.Unlock()
 	for _, task := range c.taskStates.reduceTasks {
-		if task.status != COMPLETED {
+		if task.Status != COMPLETED {
 			return false
 		}
 	}
@@ -175,7 +176,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 // allTaskCompleted checks if all tasks of the given type is completed.
 func allTaskCompleted(taskInfo []taskInfo) bool {
 	for _, task := range taskInfo {
-		if task.status != COMPLETED {
+		if task.Status != COMPLETED {
 			return false
 		}
 	}
@@ -190,12 +191,12 @@ func (c *Coordinator) resetUncompletedTasks(taskID int, taskType int) {
 	c.taskStates.cond.L.Lock()
 	defer c.taskStates.cond.L.Unlock()
 	if taskType == MAP {
-		if c.taskStates.mapTasks[taskID].status != COMPLETED {
-			c.taskStates.mapTasks[taskID].status = IDLE
+		if c.taskStates.mapTasks[taskID].Status != COMPLETED {
+			c.taskStates.mapTasks[taskID].Status = IDLE
 		}
 	} else if taskType == REDUCE {
-		if c.taskStates.reduceTasks[taskID].status != COMPLETED {
-			c.taskStates.reduceTasks[taskID].status = IDLE
+		if c.taskStates.reduceTasks[taskID].Status != COMPLETED {
+			c.taskStates.reduceTasks[taskID].Status = IDLE
 		}
 	}
 	c.taskStates.cond.Broadcast()

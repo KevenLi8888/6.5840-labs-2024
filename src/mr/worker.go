@@ -60,28 +60,28 @@ func Worker(mapf func(string, string) []KeyValue,
 		taskInfo := getTaskReply.TaskInfo
 
 		// read the file and call the corresponding function.
-		if taskInfo.taskType == MAP {
+		if taskInfo.TaskType == MAP {
 			// read the input file
-			inputFile, err := os.Open(taskInfo.filePath[0])
+			inputFile, err := os.Open(taskInfo.FilePath[0])
 			if err != nil {
-				log.Printf("Cannot open inputFile: %v, %v", taskInfo.filePath, err)
+				log.Printf("Cannot open inputFile: %v, %v", taskInfo.FilePath, err)
 				continue
 			}
 
 			content, err := io.ReadAll(inputFile)
 			if err != nil {
-				log.Printf("Cannot read inputFile: %v, %v", taskInfo.filePath, err)
+				log.Printf("Cannot read inputFile: %v, %v", taskInfo.FilePath, err)
 				continue
 			}
 
 			inputFile.Close()
 			// call the map function
-			kva := mapf(taskInfo.filePath[0], string(content))
+			kva := mapf(taskInfo.FilePath[0], string(content))
 
 			// split the intermediate key-value pairs into nReduce parts
-			intermediate := make([][]KeyValue, taskInfo.nReduce)
+			intermediate := make([][]KeyValue, taskInfo.NReduce)
 			for _, kv := range kva {
-				reduceTaskID := ihash(kv.Key) % taskInfo.nReduce
+				reduceTaskID := ihash(kv.Key) % taskInfo.NReduce
 				intermediate[reduceTaskID] = append(intermediate[reduceTaskID], kv)
 			}
 
@@ -119,8 +119,8 @@ func Worker(mapf func(string, string) []KeyValue,
 			}
 
 			// send the intermediate file paths and the task status to the coordinator
-			taskInfo.status = COMPLETED
-			taskInfo.filePath = intermediateFilePaths
+			taskInfo.Status = COMPLETED
+			taskInfo.FilePath = intermediateFilePaths
 			reportTaskArgs := ReportTaskArgs{taskID, taskInfo}
 			reportTaskReply := ReportTaskReply{}
 			err = call("Coordinator.ReportTask", &reportTaskArgs, &reportTaskReply)
@@ -128,10 +128,10 @@ func Worker(mapf func(string, string) []KeyValue,
 				log.Printf("ReportTask call failed: %v", err)
 				continue
 			}
-		} else if taskInfo.taskType == REDUCE {
+		} else if taskInfo.TaskType == REDUCE {
 			// read in all the intermediate files
 			intermediate := []KeyValue{}
-			for _, fileName := range taskInfo.filePath {
+			for _, fileName := range taskInfo.FilePath {
 				file, err := os.Open(fileName)
 				if err != nil {
 					log.Printf("Cannot open inputFile: %v, %v", fileName, err)
@@ -180,11 +180,11 @@ func Worker(mapf func(string, string) []KeyValue,
 				i = j
 			}
 			ofile.Close()
-		} else if taskInfo.taskType == EXIT {
+		} else if taskInfo.TaskType == EXIT {
 			log.Printf("Received EXIT task, exiting")
 			return
 		} else {
-			log.Printf("Unknown task type: %v", taskInfo.taskType)
+			log.Printf("Unknown task type: %v", taskInfo.TaskType)
 		}
 	}
 }
