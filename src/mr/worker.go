@@ -191,7 +191,7 @@ func Worker(mapf func(string, string) []KeyValue,
 				continue
 			}
 		} else if taskInfo.TaskType == EXIT {
-			log.Printf("Received EXIT task, exiting")
+			log.Printf("Received EXIT task, worker exiting...")
 			return
 		} else {
 			log.Printf("Unknown task type: %v", taskInfo.TaskType)
