@@ -90,7 +90,6 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 			c.taskStates.cond.Wait()
 		} else {
 			// all tasks are completed, send an EXIT task
-			// FIXME: both the worker and the coordinator does not exit when all tasks are completed
 			reply.TaskInfo = taskInfo{Status: COMPLETED, TaskType: EXIT}
 			return nil
 		}

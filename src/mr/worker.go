@@ -180,6 +180,16 @@ func Worker(mapf func(string, string) []KeyValue,
 				i = j
 			}
 			ofile.Close()
+
+			// send the task status to the coordinator
+			taskInfo.Status = COMPLETED
+			reportTaskArgs := ReportTaskArgs{taskID, taskInfo}
+			reportTaskReply := ReportTaskReply{}
+			err = call("Coordinator.ReportTask", &reportTaskArgs, &reportTaskReply)
+			if err != nil {
+				log.Printf("ReportTask call failed: %v", err)
+				continue
+			}
 		} else if taskInfo.TaskType == EXIT {
 			log.Printf("Received EXIT task, exiting")
 			return
