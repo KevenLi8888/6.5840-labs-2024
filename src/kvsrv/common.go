@@ -1,5 +1,11 @@
 package kvsrv
 
+const (
+	GET int = iota + 1
+	PUT
+	APPEND
+)
+
 // Put or Append
 type PutAppendArgs struct {
 	Key   string
@@ -7,6 +13,8 @@ type PutAppendArgs struct {
 	// You'll have to add definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	ClerkID   int64
+	RequestID int64
 }
 
 type PutAppendReply struct {
@@ -16,6 +24,8 @@ type PutAppendReply struct {
 type GetArgs struct {
 	Key string
 	// You'll have to add definitions here.
+	ClerkID   int64
+	RequestID int64
 }
 
 type GetReply struct {
